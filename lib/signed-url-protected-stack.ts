@@ -1,13 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
-import {CfnOutput, Duration} from 'aws-cdk-lib';
+import {CfnOutput} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import * as cf from 'aws-cdk-lib/aws-cloudfront';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
-import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as fs from "fs";
 import {MediaCloudFront, SignedUrl} from "./shared-props";
+import {ProtectedMediaStack} from "./shared-stack";
 
 interface SignedUrlProtectedStackProps extends cdk.StackProps, MediaCloudFront {
   signedUrl: SignedUrl
@@ -15,80 +13,17 @@ interface SignedUrlProtectedStackProps extends cdk.StackProps, MediaCloudFront {
 }
 
 
-export class SignedUrlProtectedStack extends cdk.Stack {
+export class SignedUrlProtectedStack extends ProtectedMediaStack {
   constructor(scope: Construct, id: string, props: SignedUrlProtectedStackProps) {
     super(scope, id, props);
-    const lambdaEdgeBasicExecutionRole = new iam.Role(this, 'lambdaEdgeBasicExecutionRole', {
-      assumedBy: new iam.CompositePrincipal(new iam.ServicePrincipal('edgelambda.amazonaws.com'), new iam.ServicePrincipal('lambda.amazonaws.com')) ,
-      managedPolicies: [iam.ManagedPolicy.fromManagedPolicyArn(this, 'AWSLambdaBasicExecutionRole', 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole')],
-    });
-    let origin: cf.IOrigin
-    if(props.s3Origin) {
-      const s3Bucket = s3.Bucket.fromBucketAttributes(this, 'originS3', {
-        bucketArn: props.s3Origin.bucketArn,
-        region: props.s3Origin.region,
-      })
-      origin = new origins.S3Origin(s3Bucket, {
-        originAccessIdentity: cf.OriginAccessIdentity.fromOriginAccessIdentityId(this, 'oai', props.s3Origin.originAccessIdentityId),
-        originPath: props.s3Origin.originPath
-      })
-    } else if(props.httpOrigin) {
-      origin = new origins.HttpOrigin(props.httpOrigin.domainName, props.httpOrigin.originProps)
-    } else {
-      throw new Error("no origin")
-    }
-
-    let edgeLambdas: cf.EdgeLambda[] = []
-    if(props.addCorsResponse) {
-      const addCorsFunc = new lambda.Function(this, 'addCors', {
-        runtime: lambda.Runtime.NODEJS_18_X,
-        handler: 'addCors.handler',
-        role: lambdaEdgeBasicExecutionRole,
-        code: lambda.Code.fromAsset('./lib/functions'),
-        timeout: Duration.seconds(5),
-      });
-      edgeLambdas = [{
-        eventType: cf.LambdaEdgeEventType.ORIGIN_RESPONSE,
-        includeBody: false,
-        functionVersion: addCorsFunc.currentVersion
-      }]
-    }
-    const liveManifestCachePolicy = new cf.CachePolicy(this, 'liveManifestCachePolicy', {
-      minTtl: Duration.seconds(5),
-      maxTtl: Duration.minutes(3),
-      defaultTtl: Duration.seconds(6),
-      headerBehavior: cf.CacheHeaderBehavior.allowList('Origin'),
-      enableAcceptEncodingGzip: true,
-      enableAcceptEncodingBrotli: true,
-    })
-
+    const leRole = this.createLambdaEdgeBasicExecutionRole();
+    const origin = this.createOrigin(props);
+    const liveManifestCachePolicy = this.createLiveManifestCachePolicy();
+    let edgeLambdas: cf.EdgeLambda[] = [this.createLambdaEdgeAddCors(leRole)]
     const cfBehaviours: Record<string, cf.BehaviorOptions> = {}
     if(props.jwtTokenKeys) {
-      //TODO: deploy cloudfront function for JWT token validation.
-      const validateTokenFuncCode = cf.FunctionCode.fromInline(
-          fs.readFileSync('./lib/functions/cff.js', 'utf-8')
-          .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtTokenKeys))
-      )
-      const validateJwtTokenCff = new cf.Function(this, 'validateTokenFunc', {
-        code: validateTokenFuncCode,
-        comment: 'Validate JWT function',
-        functionName: 'validateTokenFunc'
-      });
       if(props.sampleMasterManifests) {
-        const getMasterManifestJwtUrlCode = lambda.Code.fromInline(
-            fs.readFileSync('./lib/functions/getMasterManifestJwtUrl.js', 'utf-8')
-                .replace(/'MASTER_MANIFESTS'/g, JSON.stringify(props.sampleMasterManifests))
-                .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
-                .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
-                .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtTokenKeys))
-        )
-        const getMasterManifestJwtUrlFunc = new lambda.Function(this, 'getMasterManifestJwtUrl', {
-          runtime: lambda.Runtime.NODEJS_16_X,
-          handler: 'index.handler',
-          role: lambdaEdgeBasicExecutionRole,
-          code: getMasterManifestJwtUrlCode,
-          timeout: Duration.seconds(5),
-        });
+        const getMasterManifestJwtUrlFunc = this.createFuncGetMasterManifestJwtUrl(leRole, props)
         cfBehaviours["/api/v2/urls/*"] = {
           origin: origin,
           viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -102,42 +37,14 @@ export class SignedUrlProtectedStack extends cdk.Stack {
       }
     }
 
-
     const pubKey = new cf.PublicKey(this, 'cfPubKey', {
       encodedKey: props.signedUrl.publicKey,
     });
-    const trustedKeyGroup = new cf.KeyGroup(this, 'cfKeyGroup', {
-      items: [pubKey],
-    });
-    const updateHlsManifestWithSignedUrlCode = lambda.Code.fromInline(
-        fs.readFileSync('./lib/functions/updateHlsManifestWithSignedUrl.js', 'utf-8')
-            .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
-            .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
-            .replace(/CORS_RESPONSE/g, props.addCorsResponse ? '*' : '')
-            .replace(/KEY_PAIR_ID/g, pubKey.publicKeyId)
-            .replace(/PRIVATE_KEY/g, props.signedUrl.privateKey))
-    // trustedKeyGroup.keyGroupId
-    const updateHlsManifestWithSignedUrlFunc = new lambda.Function(this, 'updateHlsManifestWithSignedUrl', {
-      runtime: lambda.Runtime.NODEJS_16_X,
-      handler: 'index.handler',
-      role: lambdaEdgeBasicExecutionRole,
-      code: updateHlsManifestWithSignedUrlCode,
-      timeout: Duration.seconds(5),
-    });
+    const trustedKeyGroup = new cf.KeyGroup(this, 'cfKeyGroup', { items: [pubKey] });
 
+    const updateHlsManifestWithSignedUrlFunc = this.createFuncUpdateHlsManifestWithSignedUrl(leRole, pubKey, props)
     if(props.sampleMasterManifests) {
-      const getMasterManifestSignedUrlCode = lambda.Code.fromInline(
-          fs.readFileSync('./lib/functions/getMasterManifestSignedUrl.js', 'utf-8')
-              .replace(/'MASTER_MANIFESTS'/g, JSON.stringify(props.sampleMasterManifests))
-              .replace(/KEY_PAIR_ID/g, pubKey.publicKeyId)
-              .replace(/PRIVATE_KEY/g, props.signedUrl.privateKey))
-      const getMasterManifestSignedUrlFunc = new lambda.Function(this, 'getMasterManifestSignedUrl', {
-        runtime: lambda.Runtime.NODEJS_16_X,
-        handler: 'index.handler',
-        role: lambdaEdgeBasicExecutionRole,
-        code: getMasterManifestSignedUrlCode,
-        timeout: Duration.seconds(5),
-      });
+      const getMasterManifestSignedUrlFunc = this.createFuncGetMasterManifestSignedUrl(leRole, pubKey, props)
       cfBehaviours["/api/v1/urls/*"] = {
         origin: origin,
         viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -181,21 +88,7 @@ export class SignedUrlProtectedStack extends cdk.Stack {
     new CfnOutput(this, 'signedUrlProtectedCloudFrontDistributionId', {value: signedUrlProtectedDist.distributionId});
 
     if(props.jwtTokenKeys) {
-      const updateHlsTokenManifestWithSignedUrlCode = lambda.Code.fromInline(
-          fs.readFileSync('./lib/functions/updateHlsTokenManifestWithSignedUrl.js', 'utf-8')
-              .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
-              .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
-              .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtTokenKeys))
-              .replace(/CORS_RESPONSE/g, props.addCorsResponse ? '*' : '')
-              .replace(/KEY_PAIR_ID/g, pubKey.publicKeyId)
-              .replace(/PRIVATE_KEY/g, props.signedUrl.privateKey))
-      const updateHlsTokenManifestWithSignedUrlFunc = new lambda.Function(this, 'updateHlsTokenManifestWithSignedUrlFunc', {
-        runtime: lambda.Runtime.NODEJS_16_X,
-        handler: 'index.handler',
-        role: lambdaEdgeBasicExecutionRole,
-        code: updateHlsTokenManifestWithSignedUrlCode,
-        timeout: Duration.seconds(5),
-      });
+      const updateHlsTokenManifestWithSignedUrlFunc = this.createFuncUpdateHlsTokenManifestWithSignedUrl(leRole, pubKey, props)
       const jwtSignedUrlProtectedDist = new cf.Distribution(this, 'jwtSignedUrlProtectedDist', {
         defaultBehavior: {
           origin: origin,
@@ -230,5 +123,45 @@ export class SignedUrlProtectedStack extends cdk.Stack {
       new CfnOutput(this, 'jwtSignedUrlProtectedCloudFrontDomainName', {value: jwtSignedUrlProtectedDist.domainName});
       new CfnOutput(this, 'jwtSignedUrlProtectedCloudFrontDistributionId', {value: jwtSignedUrlProtectedDist.distributionId});
     }
+  }
+
+  createFuncGetMasterManifestJwtUrl(leRole: iam.Role, props: SignedUrlProtectedStackProps) {
+    return this.createLambdaFromFile(leRole, 'getMasterManifestJwtUrl',
+        fs.readFileSync('./lib/functions/getMasterManifestJwtUrl.js', 'utf-8')
+            .replace(/'MASTER_MANIFESTS'/g, JSON.stringify(props.sampleMasterManifests))
+            .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
+            .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
+            .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtTokenKeys)))
+  }
+
+  createFuncGetMasterManifestSignedUrl(leRole: iam.Role, pubKey: cf.PublicKey, props: SignedUrlProtectedStackProps) {
+    return this.createLambdaFromFile(leRole, 'getMasterManifestSignedUrl',
+        fs.readFileSync('./lib/functions/getMasterManifestSignedUrl.js', 'utf-8')
+            .replace(/'MASTER_MANIFESTS'/g, JSON.stringify(props.sampleMasterManifests))
+            .replace(/KEY_PAIR_ID/g, pubKey.publicKeyId)
+            .replace(/PRIVATE_KEY/g, props.signedUrl.privateKey)
+            .replace(/: 300/g, `: ${props.signedUrl.ttl.toSeconds()}`))
+  }
+  createFuncUpdateHlsManifestWithSignedUrl(leRole: iam.Role, pubKey: cf.PublicKey, props: SignedUrlProtectedStackProps) {
+    return this.createLambdaFromFile(leRole, 'updateHlsManifestWithSignedUrl',
+        fs.readFileSync('./lib/functions/updateHlsManifestWithSignedUrl.js', 'utf-8')
+            .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
+            .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
+            .replace(/CORS_RESPONSE/g, props.addCorsResponse ? '*' : '')
+            .replace(/KEY_PAIR_ID/g, pubKey.publicKeyId)
+            .replace(/PRIVATE_KEY/g, props.signedUrl.privateKey)
+            .replace(/duration = 300/g, `duration = ${props.signedUrl.ttl.toSeconds()}`)
+    )
+  }
+  createFuncUpdateHlsTokenManifestWithSignedUrl(leRole: iam.Role, pubKey: cf.PublicKey, props: SignedUrlProtectedStackProps) {
+    return this.createLambdaFromFile(leRole, 'updateHlsTokenManifestWithSignedUrlFunc',
+        fs.readFileSync('./lib/functions/updateHlsTokenManifestWithSignedUrl.js', 'utf-8')
+            .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
+            .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
+            .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtTokenKeys))
+            .replace(/CORS_RESPONSE/g, props.addCorsResponse ? '*' : '')
+            .replace(/KEY_PAIR_ID/g, pubKey.publicKeyId)
+            .replace(/duration = 300/g, `duration = ${props.signedUrl.ttl.toSeconds()}`)
+            .replace(/PRIVATE_KEY/g, props.signedUrl.privateKey))
   }
 }
