@@ -16,7 +16,7 @@ const VOD_FOUNDATION_SOLUTION_1: MediaCloudFront  = {
     manifestDistributionAttrs: {
         // from VOD Foundation solution
         distributionId: 'XXX',
-        // aws cloudfront get-distribution --id E13F2DYVXF3AC9
+        // aws cloudfront get-distribution --id xxx
         domainName: 'xxx.cloudfront.net'
     },
     s3Origin: {
