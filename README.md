@@ -29,3 +29,7 @@ This repo implements secure media delivery at edge (Amazon CloudFront), with 3 d
 ```bash
 cdk deploy --all --require-approval never
 ```
+
+### Flow
+
+![sequence](./docs/02-sequence-rewriting-manifest-content.png)

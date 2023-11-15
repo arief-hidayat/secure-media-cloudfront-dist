@@ -1,0 +1,20 @@
+title JWT Token on URL Path
+
+FE ->+ BE: generate token
+BE ->- FE: https://cdn.com/my-token/master.m3u8
+FE ->+ CF: video player plays https://cdn.com/my-token/master.m3u8
+note right of CF
+    CFF viewer request:
+
+    validate token expiry
+    and internal signature
+    (session, referer, & user-agent)
+
+    rewrite URL (remove token from URL path)
+end note
+
+opt cache missed
+    CF ->+ Origin:https://origin.com/master.m3u8
+    Origin ->- CF: content
+end
+CF ->- FE: content
