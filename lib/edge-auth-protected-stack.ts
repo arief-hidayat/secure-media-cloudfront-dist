@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import {CfnOutput} from 'aws-cdk-lib';
+import {CfnOutput, Duration} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import * as cf from 'aws-cdk-lib/aws-cloudfront';
 import * as fs from "fs";
@@ -17,7 +17,7 @@ export class EdgeAuthProtectedStack extends ProtectedMediaStack {
     super(scope, id, props);
     const leRole = this.createLambdaEdgeBasicExecutionRole();
     const origin = this.createOrigin(props);
-    const liveManifestCachePolicy = this.createLiveManifestCachePolicy();
+    const liveManifestCachePolicy = this.createLiveManifestCachePolicy(props.manifestCachePolicyProps);
     const cfBehaviours: Record<string, cf.BehaviorOptions> = {}
 
     const validateEdgeAuthTokenCff = this.createCloudFrontFunctionValidateToken(props)
@@ -28,9 +28,9 @@ export class EdgeAuthProtectedStack extends ProtectedMediaStack {
         viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cf.AllowedMethods.ALLOW_ALL,
         cachedMethods: cf.CachedMethods.CACHE_GET_HEAD,
-        cachePolicy: liveManifestCachePolicy,
+        cachePolicy: cf.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cf.OriginRequestPolicy.ALL_VIEWER,
-        edgeLambdas: [{eventType: cf.LambdaEdgeEventType.ORIGIN_REQUEST, includeBody: false, functionVersion: getMasterManifestEdgeAuthFunc.currentVersion}],
+        edgeLambdas: [{eventType: cf.LambdaEdgeEventType.VIEWER_REQUEST, includeBody: false, functionVersion: getMasterManifestEdgeAuthFunc.currentVersion}],
         compress: true
       }
     }
@@ -42,7 +42,7 @@ export class EdgeAuthProtectedStack extends ProtectedMediaStack {
       viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       allowedMethods: cf.AllowedMethods.ALLOW_GET_HEAD,
       cachedMethods: cf.CachedMethods.CACHE_GET_HEAD,
-      cachePolicy: liveManifestCachePolicy,
+      cachePolicy: props.oneTimeAccessConfig ? cf.CachePolicy.CACHING_DISABLED: liveManifestCachePolicy,
       originRequestPolicy: cf.OriginRequestPolicy.ALL_VIEWER,
       responseHeadersPolicy: cf.ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS_WITH_PREFLIGHT,
       edgeLambdas: [{eventType: cf.LambdaEdgeEventType.ORIGIN_REQUEST, includeBody: false, functionVersion: updateHlsManifestWithEdgeAuthFunc.currentVersion}],
@@ -96,7 +96,8 @@ export class EdgeAuthProtectedStack extends ProtectedMediaStack {
             .replace(/"__token__"/g, `"${props.tokenConfig.tokenName}"`)
             .replace(/: "36000"/g, `: "${props.tokenConfig.tokenTtl.toSeconds()}"`)
             .replace(/"ESCAPE_EARLY"/g, `${props.tokenConfig.escapeEarly}`)
-            .replace(/KEY_ID/g, props.tokenConfig.defaultKey));
+            .replace(/KEY_ID/g, props.tokenConfig.defaultKey),
+        Duration.seconds(2));
   }
 
   createFuncUpdateHlsManifestWithEdgeAuthDynamo(leRole: iam.Role, props: EdgeAuthProtectedStackProps) {

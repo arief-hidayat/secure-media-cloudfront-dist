@@ -37,6 +37,7 @@ export interface OneTimeAccessConfig {
 
 export interface MediaCloudFront {
     manifestDistributionAttrs: cf.DistributionAttributes
+    manifestCachePolicyProps?: cf.CachePolicyProps
     s3Origin?: S3OriginInfo
     httpOrigin?: HttpOriginInfo
     addCorsResponse: boolean

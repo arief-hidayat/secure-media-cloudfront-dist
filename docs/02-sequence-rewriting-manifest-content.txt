@@ -1,0 +1,60 @@
+title Rewriting Manifest Content
+
+
+FE ->+ BE: generate token
+note right of FE
+    if sampleMasterManifests is specified for tests, e.g.
+    sampleMasterManifests: {
+        "xyz" : "/xxx/index.m3u8"
+    },
+    FE can hit /api/v2/urls
+    and pass in necessary params, e.g.
+    https://cf1.com/api/v2/urls/xyz?kid=ea01&window=600
+end note
+BE ->- FE: https://cf1.com/xxx/index.m3u8?some-token-here
+FE ->+ CF1: plays https://cf1.com/xxx/index.m3u8?some-token-here
+
+
+
+alt manifest (e.g. *m3u8)
+
+    CF1 ->+ LE1: Lambda@edge Origin Request
+
+    note right of CF1
+        Lambda edge Origin Request:
+
+        * validate token
+        * if m3u8, get m3u8 content
+        * generate token for all URLs in the content
+        (set different expiry)
+        * return updated content
+    end note
+    LE1 ->+ CF2:https://origin.com/master.m3u8
+
+
+    opt cache missed
+        CF2 ->+ Origin:https://origin.com/master.m3u8
+        Origin ->- CF2: content
+    end
+
+    CF2 ->- LE1: content
+    LE1 ->- CF1: manifest updated with token
+    CF1 ->- FE: content
+else video segment (e.g. *.ts)
+
+    note right of CF1
+        CF Function:
+        validate, if there's
+        JWT or edge-auth token.
+    end note
+    CF1 ->+ CF1:
+
+opt cache missed
+    CF1 ->+ Origin:https://origin.com/1.ts
+    Origin ->- CF1: content
+end
+CF1 ->- FE: content
+
+end
+
+

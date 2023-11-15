@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import {CfnOutput} from 'aws-cdk-lib';
+import {CfnOutput, Duration} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import * as cf from 'aws-cdk-lib/aws-cloudfront';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -18,8 +18,7 @@ export class SignedUrlProtectedStack extends ProtectedMediaStack {
     super(scope, id, props);
     const leRole = this.createLambdaEdgeBasicExecutionRole();
     const origin = this.createOrigin(props);
-    const liveManifestCachePolicy = this.createLiveManifestCachePolicy();
-    let edgeLambdas: cf.EdgeLambda[] = [this.createLambdaEdgeAddCors(leRole)]
+    const liveManifestCachePolicy = this.createLiveManifestCachePolicy(props.manifestCachePolicyProps);
     const cfBehaviours: Record<string, cf.BehaviorOptions> = {}
     if(props.jwtTokenKeys) {
       if(props.sampleMasterManifests) {
@@ -29,9 +28,9 @@ export class SignedUrlProtectedStack extends ProtectedMediaStack {
           viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           allowedMethods: cf.AllowedMethods.ALLOW_ALL,
           cachedMethods: cf.CachedMethods.CACHE_GET_HEAD,
-          cachePolicy: liveManifestCachePolicy,
+          cachePolicy: cf.CachePolicy.CACHING_DISABLED,
           originRequestPolicy: cf.OriginRequestPolicy.ALL_VIEWER,
-          edgeLambdas: [{eventType: cf.LambdaEdgeEventType.ORIGIN_REQUEST, includeBody: false, functionVersion: getMasterManifestJwtUrlFunc.currentVersion}],
+          edgeLambdas: [{eventType: cf.LambdaEdgeEventType.VIEWER_REQUEST, includeBody: false, functionVersion: getMasterManifestJwtUrlFunc.currentVersion}],
           compress: true
         }
       }
@@ -50,9 +49,9 @@ export class SignedUrlProtectedStack extends ProtectedMediaStack {
         viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cf.AllowedMethods.ALLOW_ALL,
         cachedMethods: cf.CachedMethods.CACHE_GET_HEAD,
-        cachePolicy: liveManifestCachePolicy,
+        cachePolicy: cf.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cf.OriginRequestPolicy.ALL_VIEWER,
-        edgeLambdas: [{eventType: cf.LambdaEdgeEventType.ORIGIN_REQUEST, includeBody: false, functionVersion: getMasterManifestSignedUrlFunc.currentVersion}],
+        edgeLambdas: [{eventType: cf.LambdaEdgeEventType.VIEWER_REQUEST, includeBody: false, functionVersion: getMasterManifestSignedUrlFunc.currentVersion}],
         compress: true
       }
     }
@@ -75,7 +74,7 @@ export class SignedUrlProtectedStack extends ProtectedMediaStack {
         allowedMethods: cf.AllowedMethods.ALLOW_GET_HEAD,
         cachedMethods: cf.CachedMethods.CACHE_GET_HEAD,
         cachePolicy: cf.CachePolicy.CACHING_OPTIMIZED,
-        edgeLambdas: edgeLambdas,
+        responseHeadersPolicy: cf.ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS_WITH_PREFLIGHT, // add-cors
         trustedKeyGroups: [trustedKeyGroup],
         compress: true
       },
@@ -96,7 +95,7 @@ export class SignedUrlProtectedStack extends ProtectedMediaStack {
           allowedMethods: cf.AllowedMethods.ALLOW_GET_HEAD,
           cachedMethods: cf.CachedMethods.CACHE_GET_HEAD,
           cachePolicy: cf.CachePolicy.CACHING_OPTIMIZED,
-          edgeLambdas: edgeLambdas,
+          responseHeadersPolicy: cf.ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS_WITH_PREFLIGHT, // add-cors
           trustedKeyGroups: [trustedKeyGroup],
           compress: true
         },
@@ -131,7 +130,9 @@ export class SignedUrlProtectedStack extends ProtectedMediaStack {
             .replace(/'MASTER_MANIFESTS'/g, JSON.stringify(props.sampleMasterManifests))
             .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
             .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
-            .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtTokenKeys)))
+            .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtTokenKeys)),
+        Duration.seconds(2)
+    )
   }
 
   createFuncGetMasterManifestSignedUrl(leRole: iam.Role, pubKey: cf.PublicKey, props: SignedUrlProtectedStackProps) {
@@ -140,7 +141,9 @@ export class SignedUrlProtectedStack extends ProtectedMediaStack {
             .replace(/'MASTER_MANIFESTS'/g, JSON.stringify(props.sampleMasterManifests))
             .replace(/KEY_PAIR_ID/g, pubKey.publicKeyId)
             .replace(/PRIVATE_KEY/g, props.signedUrl.privateKey)
-            .replace(/: 300/g, `: ${props.signedUrl.ttl.toSeconds()}`))
+            .replace(/: 300/g, `: ${props.signedUrl.ttl.toSeconds()}`),
+        Duration.seconds(2)
+    )
   }
   createFuncUpdateHlsManifestWithSignedUrl(leRole: iam.Role, pubKey: cf.PublicKey, props: SignedUrlProtectedStackProps) {
     return this.createLambdaFromFile(leRole, 'updateHlsManifestWithSignedUrl',

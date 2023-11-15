@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import {CfnOutput} from 'aws-cdk-lib';
+import {CfnOutput, Duration} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import * as cf from 'aws-cdk-lib/aws-cloudfront';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -16,7 +16,7 @@ export class JwtProtectedStack extends ProtectedMediaStack {
         super(scope, id, props);
         const leRole = this.createLambdaEdgeBasicExecutionRole();
         const origin = this.createOrigin(props);
-        const liveManifestCachePolicy = this.createLiveManifestCachePolicy();
+        const liveManifestCachePolicy = this.createLiveManifestCachePolicy(props.manifestCachePolicyProps);
         const validateJwtTokenCff = this.createCloudFrontFunctionValidateJwtToken(props)
         const cfBehaviours: Record<string, cf.BehaviorOptions> = {}
         if (props.sampleMasterManifests) {
@@ -26,9 +26,9 @@ export class JwtProtectedStack extends ProtectedMediaStack {
                 viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowedMethods: cf.AllowedMethods.ALLOW_ALL,
                 cachedMethods: cf.CachedMethods.CACHE_GET_HEAD,
-                cachePolicy: liveManifestCachePolicy,
+                cachePolicy: cf.CachePolicy.CACHING_DISABLED,
                 originRequestPolicy: cf.OriginRequestPolicy.ALL_VIEWER,
-                edgeLambdas: [{eventType: cf.LambdaEdgeEventType.ORIGIN_REQUEST, includeBody: false, functionVersion: getMasterManifestJwtUrlFunc.currentVersion}],
+                edgeLambdas: [{eventType: cf.LambdaEdgeEventType.VIEWER_REQUEST, includeBody: false, functionVersion: getMasterManifestJwtUrlFunc.currentVersion}],
                 compress: true
             }
         }
@@ -103,7 +103,8 @@ export class JwtProtectedStack extends ProtectedMediaStack {
                 .replace(/MANIFEST_DOMAIN_NAME/g, props.manifestDistributionAttrs.domainName)
                 .replace(/VIEWER_DOMAIN_NAME/g, props.customViewerDomainName ? props.customViewerDomainName : "")
                 .replace(/'JWT_KEYS'/g, JSON.stringify(props.jwtToken.keys))
-                .replace(/TOKEN_TTL/g, props.jwtToken.ttl ? props.jwtToken.ttl : '+5m')
+                .replace(/TOKEN_TTL/g, props.jwtToken.ttl ? props.jwtToken.ttl : '+5m'),
+            Duration.seconds(2)
         )
     }
 

@@ -51,40 +51,25 @@ export class ProtectedMediaStack extends cdk.Stack {
         })
     }
 
-    createLambdaEdgeAddCors(lambdaEdgeBasicExecutionRole: iam.Role): cf.EdgeLambda {
-        const addCorsFunc = new lambda.Function(this, 'addCors', {
-            runtime: lambda.Runtime.NODEJS_18_X,
-            handler: 'addCors.handler',
-            role: lambdaEdgeBasicExecutionRole,
-            code: lambda.Code.fromAsset('./lib/functions'),
-            timeout: Duration.seconds(5),
-        });
-        return {
-            eventType: cf.LambdaEdgeEventType.ORIGIN_RESPONSE,
-            includeBody: false,
-            functionVersion: addCorsFunc.currentVersion
-        }
+    createLiveManifestCachePolicy(cachePolicy: cf.CachePolicyProps = {
+        minTtl: Duration.seconds(5),
+        maxTtl: Duration.minutes(3),
+        defaultTtl: Duration.seconds(6),
+        headerBehavior: cf.CacheHeaderBehavior.allowList('Origin'),
+        enableAcceptEncodingGzip: true,
+        enableAcceptEncodingBrotli: true,
+    }): cf.CachePolicy {
+        return new cf.CachePolicy(this, 'liveManifestCachePolicy', cachePolicy)
     }
 
-    createLiveManifestCachePolicy(): cf.CachePolicy {
-        return new cf.CachePolicy(this, 'liveManifestCachePolicy', {
-            minTtl: Duration.seconds(5),
-            maxTtl: Duration.minutes(3),
-            defaultTtl: Duration.seconds(6),
-            headerBehavior: cf.CacheHeaderBehavior.allowList('Origin'),
-            enableAcceptEncodingGzip: true,
-            enableAcceptEncodingBrotli: true,
-        })
-    }
-
-    createLambdaFromFile(lambdaEdgeBasicExecutionRole: iam.Role, name: string, inlineCode: string): lambda.Function {
+    createLambdaFromFile(lambdaEdgeBasicExecutionRole: iam.Role, name: string, inlineCode: string, timeout: Duration = Duration.seconds(15)): lambda.Function {
         const code = lambda.Code.fromInline(inlineCode)
         return new lambda.Function(this, name, {
             runtime: lambda.Runtime.NODEJS_16_X,
             handler: 'index.handler',
             role: lambdaEdgeBasicExecutionRole,
             code: code,
-            timeout: Duration.seconds(15),
+            timeout: timeout,
         });
     }
 }
